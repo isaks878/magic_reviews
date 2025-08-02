@@ -1,0 +1,11 @@
+fastapi
+uvicorn
+aiofiles
+pydantic
+jinja2
+SQLAlchemy
+selenium
+pandas
+matplotlib
+python-multipart
+python-dotenv
