@@ -1,64 +1,76 @@
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.common.by import By
-import time, re
+import json
+import random
+import time
+import re
 from datetime import datetime
+from typing import List, Dict
+
+import requests
+
+
+# Набор user-agent'ов, чтобы не блокировали запросы
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/113.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.5 Safari/605.1.15",
+]
+
 
 def extract_product_id(product_input: str) -> str:
-    if product_input.startswith('http'):
-        match = re.search(r'product/(\d+)', product_input)
+    """Извлекает числовой ID товара из ссылки или строки."""
+    if product_input.startswith("http"):
+        match = re.search(r"product/(\d+)", product_input)
         if match:
             return match.group(1)
     elif product_input.isdigit():
         return product_input
-    else:
-        raise ValueError("Невалидный ввод")
-    return product_input
+    raise ValueError("Невалидный ввод")
 
-def parse_ozon_reviews(product_input: str, max_reviews=30) -> list:
-    chrome_options = Options()
-    chrome_options.add_argument("--headless")
-    chrome_options.add_argument("--no-sandbox")
-    chrome_options.add_argument("--disable-dev-shm-usage")
-    driver = webdriver.Chrome(options=chrome_options)
 
+def parse_ozon_reviews(product_input: str, max_reviews: int = 30) -> List[Dict]:
+    """Получает отзывы о товаре Ozon через внутренний API."""
     pid = extract_product_id(product_input)
-    url = f"https://www.ozon.ru/product/{pid}/reviews"
+    reviews: List[Dict] = []
+    page = 1
+    session = requests.Session()
 
-    driver.get(url)
-    time.sleep(2)
+    while len(reviews) < max_reviews:
+        url = (
+            "https://www.ozon.ru/api/composer-api.bx/page/json/v2?url="
+            f"/product/{pid}/reviews&page={page}"
+        )
+        headers = {"User-Agent": random.choice(USER_AGENTS)}
+        resp = session.get(url, headers=headers, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
 
-    reviews = []
-    count = 0
-    while count < max_reviews:
-        review_blocks = driver.find_elements(By.CSS_SELECTOR, '[data-widget="webReview"]')
-        for rb in review_blocks:
-            try:
-                rating = float(rb.find_element(By.CSS_SELECTOR, '[data-test-id="review-rating-value"]').text.replace(',','.'))
-                text = rb.find_element(By.CSS_SELECTOR, '[data-test-id="review-text"]').text.strip()
-                author = rb.find_element(By.CSS_SELECTOR, '[data-test-id="review-author-name"]').text.strip()
-                date_str = rb.find_element(By.CSS_SELECTOR, '[data-test-id="review-date"]').text.strip()
-                date = datetime.strptime(date_str, "%d %B %Y")
-                reviews.append({
-                    "review_id": f"rev_{count}_{pid}",
-                    "author": author,
-                    "date": date,
-                    "rating": rating,
-                    "text": text
-                })
-                count += 1
-            except Exception as err:
-                continue
-            if count >= max_reviews:
-                break
-        # Кнопка "Следующая страница"
-        try:
-            next_btn = driver.find_element(By.CSS_SELECTOR, '[data-test-id="pagination-forward"]')
-            if 'disabled' in next_btn.get_attribute('class'):
-                break
-            next_btn.click()
-            time.sleep(2)
-        except Exception:
+        widget_key = next(
+            (k for k in data.get("widgetStates", {}) if k.startswith("webReview")),
+            None,
+        )
+        if not widget_key:
             break
-    driver.quit()
+        widget_data = json.loads(data["widgetStates"][widget_key])
+
+        for item in widget_data.get("reviews", []):
+            reviews.append(
+                {
+                    "review_id": str(item.get("id")),
+                    "author": item.get("authorText", ""),
+                    "date": datetime.fromtimestamp(
+                        item.get("creationTime", 0) / 1000
+                    ),
+                    "rating": item.get("rating", 0),
+                    "text": item.get("text", ""),
+                }
+            )
+            if len(reviews) >= max_reviews:
+                break
+
+        if not widget_data.get("paging", {}).get("nextPage"):
+            break
+
+        page += 1
+        time.sleep(random.uniform(0.5, 1.5))
+
     return reviews
+

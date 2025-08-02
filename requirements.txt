@@ -4,8 +4,9 @@ aiofiles
 pydantic
 jinja2
 SQLAlchemy
-selenium
+requests
 pandas
 matplotlib
 python-multipart
 python-dotenv
+
