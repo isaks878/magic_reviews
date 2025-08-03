@@ -16,11 +16,10 @@ if not logging.getLogger().handlers:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
         handlers=[
-            logging.FileHandler("app.log"),
+            logging.FileHandler("app.log", encoding="utf-8"),
             logging.StreamHandler(),
         ],
     )
-
 logger = logging.getLogger(__name__)
 
 # Настройка базы данных
@@ -49,7 +48,11 @@ async def dashboard(request: Request):
     session.close()
     return templates.TemplateResponse(
         "dashboard.html",
-        {"request": request, "reviews": df.to_dict("records"), "error": request.query_params.get("error")},
+        {
+            "request": request,
+            "reviews": df.to_dict("records"),
+            "error": request.query_params.get("error"),
+        },
     )
 
 @app.post("/analyze", response_class=HTMLResponse)

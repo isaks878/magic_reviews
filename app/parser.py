@@ -52,7 +52,7 @@ def extract_product_id(product_input: str) -> str:
 def parse_ozon_reviews(
     product_input: str, max_reviews: Optional[int] = None
 ) -> List[Dict]:
-    """Получает отзывы о товаре Ozon через внутренний API с логированием процесса."""
+    """Получает отзывы о товаре Ozon через внутренний API с логированием."""
     pid = extract_product_id(product_input)
     logger.info("Начинаем загрузку отзывов для товара %s", pid)
     reviews: List[Dict] = []
@@ -82,10 +82,23 @@ def parse_ozon_reviews(
         try:
             resp = session.get(url, headers=_build_headers(), timeout=10)
             resp.raise_for_status()
+        except requests.HTTPError as exc:
+            status = exc.response.status_code if exc.response else "unknown"
+            logger.warning(
+                "HTTP %s при загрузке страницы %s для товара %s", status, page, pid
+            )
+            break
+        except requests.RequestException as exc:
+            logger.warning(
+                "Сетевая ошибка при загрузке страницы %s для товара %s: %s",
+                page, pid, exc,
+            )
+            break
+        try:
             data = resp.json()
-        except (requests.RequestException, ValueError, json.JSONDecodeError) as exc:
-            logger.exception(
-                "Ошибка при загрузке страницы %s для товара %s: %s", page, pid, exc
+        except (ValueError, json.JSONDecodeError) as exc:
+            logger.warning(
+                "Ошибка декодирования JSON на странице %s для товара %s: %s", page, pid, exc
             )
             break
 
@@ -94,7 +107,9 @@ def parse_ozon_reviews(
             None,
         )
         if not widget_key:
-            logger.warning("Не найден ключ веб-виджета на странице %s для товара %s", page, pid)
+            logger.warning(
+                "Не найден ключ webReview на странице %s для товара %s", page, pid
+            )
             break
 
         widget_data = json.loads(data["widgetStates"][widget_key])
@@ -104,7 +119,9 @@ def parse_ozon_reviews(
                 {
                     "review_id": str(item.get("id")),
                     "author": item.get("authorText", ""),
-                    "date": datetime.fromtimestamp(item.get("creationTime", 0) / 1000),
+                    "date": datetime.fromtimestamp(
+                        item.get("creationTime", 0) / 1000
+                    ),
                     "rating": item.get("rating", 0),
                     "text": item.get("text", ""),
                 }
