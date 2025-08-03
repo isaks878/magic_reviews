@@ -16,10 +16,14 @@
       <input name="product_input" class="form-control" placeholder="ID или ссылка товара" required>
       <button class="btn btn-primary" type="submit"><i class="bi bi-search"></i> Анализ</button>
     </form>
+    {% if error %}
+      <div class="alert alert-warning text-center">{{ error }}</div>
+    {% endif %}
     <table class="table table-hover table-bordered bg-white shadow-sm">
       <thead class="table-light"><tr>
         <th>Дата</th><th>Рейтинг</th><th>Тональность</th><th>Фейк?</th><th>Текст</th>
       </tr></thead>
+      {% if reviews %}
       <tbody>
         {% for r in reviews %}
           <tr>
@@ -27,6 +31,11 @@
           </tr>
         {% endfor %}
       </tbody>
+      {% else %}
+      <tbody>
+        <tr><td colspan="5" class="text-center">Нет данных для отображения</td></tr>
+      </tbody>
+      {% endif %}
     </table>
   </div>
 </body>

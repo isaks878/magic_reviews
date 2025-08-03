@@ -26,6 +26,7 @@ def _build_headers() -> Dict[str, str]:
         "Referer": "https://www.ozon.ru/",
     }
 
+
 def extract_product_id(product_input: str) -> str:
     """Извлекает числовой ID товара из ссылки или строки."""
     if product_input.startswith("http"):
@@ -35,6 +36,7 @@ def extract_product_id(product_input: str) -> str:
     elif product_input.isdigit():
         return product_input
     raise ValueError("Невалидный ввод")
+
 
 def parse_ozon_reviews(
     product_input: str, max_reviews: Optional[int] = None
