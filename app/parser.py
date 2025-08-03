@@ -3,17 +3,28 @@ import random
 import time
 import re
 from datetime import datetime
-from typing import List, Dict
+from typing import List, Dict, Optional
 
 import requests
-
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 # Набор user-agent'ов, чтобы не блокировали запросы
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/113.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.5 Safari/605.1.15",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 Mobile/15E148 Safari/604.1",
 ]
 
+def _build_headers() -> Dict[str, str]:
+    """Собирает заголовки, имитирующие реальные запросы браузера."""
+    return {
+        "User-Agent": random.choice(USER_AGENTS),
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Referer": "https://www.ozon.ru/",
+    }
 
 def extract_product_id(product_input: str) -> str:
     """Извлекает числовой ID товара из ссылки или строки."""
@@ -25,23 +36,37 @@ def extract_product_id(product_input: str) -> str:
         return product_input
     raise ValueError("Невалидный ввод")
 
-
-def parse_ozon_reviews(product_input: str, max_reviews: int = 30) -> List[Dict]:
+def parse_ozon_reviews(
+    product_input: str, max_reviews: Optional[int] = None
+) -> List[Dict]:
     """Получает отзывы о товаре Ozon через внутренний API."""
     pid = extract_product_id(product_input)
     reviews: List[Dict] = []
     page = 1
-    session = requests.Session()
-    session.trust_env = False  # ignore proxy settings that may block requests
 
-    while len(reviews) < max_reviews:
+    session = requests.Session()
+    session.trust_env = False  # игнорируем системные прокси
+
+    # Настраиваем автоматические повторы при ошибках
+    retries = Retry(
+        total=3,
+        backoff_factor=1,
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=["GET"],
+    )
+    session.mount("https://", HTTPAdapter(max_retries=retries))
+
+    while True:
+        # Выходим, если набрали нужное количество отзывов
+        if max_reviews is not None and len(reviews) >= max_reviews:
+            break
+
         url = (
             "https://www.ozon.ru/api/composer-api.bx/page/json/v2?url="
             f"/product/{pid}/reviews&page={page}"
         )
-        headers = {"User-Agent": random.choice(USER_AGENTS)}
         try:
-            resp = session.get(url, headers=headers, timeout=10)
+            resp = session.get(url, headers=_build_headers(), timeout=10)
             resp.raise_for_status()
             data = resp.json()
         except (requests.RequestException, ValueError, json.JSONDecodeError):
@@ -53,6 +78,7 @@ def parse_ozon_reviews(product_input: str, max_reviews: int = 30) -> List[Dict]:
         )
         if not widget_key:
             break
+
         widget_data = json.loads(data["widgetStates"][widget_key])
 
         for item in widget_data.get("reviews", []):
@@ -60,21 +86,18 @@ def parse_ozon_reviews(product_input: str, max_reviews: int = 30) -> List[Dict]:
                 {
                     "review_id": str(item.get("id")),
                     "author": item.get("authorText", ""),
-                    "date": datetime.fromtimestamp(
-                        item.get("creationTime", 0) / 1000
-                    ),
+                    "date": datetime.fromtimestamp(item.get("creationTime", 0) / 1000),
                     "rating": item.get("rating", 0),
                     "text": item.get("text", ""),
                 }
             )
-            if len(reviews) >= max_reviews:
+            if max_reviews is not None and len(reviews) >= max_reviews:
                 break
 
         if not widget_data.get("paging", {}).get("nextPage"):
             break
 
         page += 1
-        time.sleep(random.uniform(0.5, 1.5))
+        time.sleep(random.uniform(1, 2))
 
     return reviews
-
