@@ -1,0 +1,4 @@
+# в файле .gitignore
+venv/
+*.pyc
+__pycache__/
