@@ -3,22 +3,37 @@ import random
 import time
 import re
 from datetime import datetime
-from typing import List, Dict
+from typing import List, Dict, Optional
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+import logging
 
 
 # Набор user-agent'ов, чтобы не блокировали запросы
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/113.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.5 Safari/605.1.15",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 Mobile/15E148 Safari/604.1",
 ]
+
+
+def _build_headers() -> Dict[str, str]:
+    """Собирает заголовки, имитирующие реальные запросы браузера."""
+    return {
+        "User-Agent": random.choice(USER_AGENTS),
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Referer": "https://www.ozon.ru/",
+    }
 
 
 def extract_product_id(product_input: str) -> str:
     """Извлекает числовой ID товара из ссылки или строки."""
     if product_input.startswith("http"):
-        match = re.search(r"product/(\d+)", product_input)
+        match = re.search(r"product/(?:.*-)?(\d+)", product_input)
         if match:
             return match.group(1)
     elif product_input.isdigit():
@@ -26,29 +41,70 @@ def extract_product_id(product_input: str) -> str:
     raise ValueError("Невалидный ввод")
 
 
-def parse_ozon_reviews(product_input: str, max_reviews: int = 30) -> List[Dict]:
+logger = logging.getLogger(__name__)
+
+
+def parse_ozon_reviews(
+    product_input: str, max_reviews: Optional[int] = None
+) -> List[Dict]:
     """Получает отзывы о товаре Ozon через внутренний API."""
     pid = extract_product_id(product_input)
     reviews: List[Dict] = []
     page = 1
-    session = requests.Session()
+    logger.info("Start fetching reviews for product %s", pid)
 
-    while len(reviews) < max_reviews:
+    session = requests.Session()
+    session.trust_env = False  # ignore proxy settings that may block requests
+    retries = Retry(
+        total=3,
+        backoff_factor=1,
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=["GET"],
+    )
+    session.mount("https://", HTTPAdapter(max_retries=retries))
+
+    while True:
+        if max_reviews is not None and len(reviews) >= max_reviews:
+            break
+
         url = (
             "https://www.ozon.ru/api/composer-api.bx/page/json/v2?url="
             f"/product/{pid}/reviews&page={page}"
         )
-        headers = {"User-Agent": random.choice(USER_AGENTS)}
-        resp = session.get(url, headers=headers, timeout=10)
-        resp.raise_for_status()
-        data = resp.json()
+
+        try:
+            resp = session.get(url, headers=_build_headers(), timeout=10)
+            resp.raise_for_status()
+        except requests.HTTPError as exc:
+            status = exc.response.status_code if exc.response else "unknown"
+            logger.warning(
+                "HTTP %s while fetching page %s for product %s", status, page, pid
+            )
+            break
+        except requests.RequestException as exc:
+            logger.warning(
+                "Network error while fetching page %s for product %s: %s",
+                page,
+                pid,
+                exc,
+            )
+            break
+        try:
+            data = resp.json()
+        except (ValueError, json.JSONDecodeError) as exc:
+            logger.warning(
+                "Failed to decode JSON on page %s for product %s: %s", page, pid, exc
+            )
+            break
 
         widget_key = next(
             (k for k in data.get("widgetStates", {}) if k.startswith("webReview")),
             None,
         )
         if not widget_key:
+            logger.warning("No widget key on page %s for product %s", page, pid)
             break
+
         widget_data = json.loads(data["widgetStates"][widget_key])
 
         for item in widget_data.get("reviews", []):
@@ -63,14 +119,18 @@ def parse_ozon_reviews(product_input: str, max_reviews: int = 30) -> List[Dict]:
                     "text": item.get("text", ""),
                 }
             )
-            if len(reviews) >= max_reviews:
+            if max_reviews is not None and len(reviews) >= max_reviews:
                 break
 
         if not widget_data.get("paging", {}).get("nextPage"):
+            logger.info(
+                "No next page for product %s after page %s", pid, page
+            )
             break
 
         page += 1
-        time.sleep(random.uniform(0.5, 1.5))
+        time.sleep(random.uniform(1, 2))
 
+    logger.info("Fetched %d reviews for product %s", len(reviews), pid)
     return reviews
 
