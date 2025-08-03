@@ -2,12 +2,23 @@ import json
 import random
 import time
 import re
+import logging
 from datetime import datetime
 from typing import List, Dict, Optional
 
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+
+# Настройка логирования для парсера
+logger = logging.getLogger(__name__)
+if not logger.handlers:
+    handler = logging.StreamHandler()
+    handler.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+    )
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
 
 # Набор user-agent'ов, чтобы не блокировали запросы
 USER_AGENTS = [
@@ -35,21 +46,22 @@ def extract_product_id(product_input: str) -> str:
             return match.group(1)
     elif product_input.isdigit():
         return product_input
-    raise ValueError("Невалидный ввод")
+    raise ValueError("Невалидный ввод: имена или ссылки без ID не поддерживаются")
 
 
 def parse_ozon_reviews(
     product_input: str, max_reviews: Optional[int] = None
 ) -> List[Dict]:
-    """Получает отзывы о товаре Ozon через внутренний API."""
+    """Получает отзывы о товаре Ozon через внутренний API с логированием процесса."""
     pid = extract_product_id(product_input)
+    logger.info("Начинаем загрузку отзывов для товара %s", pid)
     reviews: List[Dict] = []
     page = 1
 
     session = requests.Session()
     session.trust_env = False  # игнорируем системные прокси
 
-    # Настраиваем автоматические повторы при ошибках
+    # Настраиваем повторы при сетевых ошибках
     retries = Retry(
         total=3,
         backoff_factor=1,
@@ -59,8 +71,8 @@ def parse_ozon_reviews(
     session.mount("https://", HTTPAdapter(max_retries=retries))
 
     while True:
-        # Выходим, если набрали нужное количество отзывов
         if max_reviews is not None and len(reviews) >= max_reviews:
+            logger.info("Достигнуто максимальное число отзывов: %d", max_reviews)
             break
 
         url = (
@@ -71,7 +83,10 @@ def parse_ozon_reviews(
             resp = session.get(url, headers=_build_headers(), timeout=10)
             resp.raise_for_status()
             data = resp.json()
-        except (requests.RequestException, ValueError, json.JSONDecodeError):
+        except (requests.RequestException, ValueError, json.JSONDecodeError) as exc:
+            logger.exception(
+                "Ошибка при загрузке страницы %s для товара %s: %s", page, pid, exc
+            )
             break
 
         widget_key = next(
@@ -79,6 +94,7 @@ def parse_ozon_reviews(
             None,
         )
         if not widget_key:
+            logger.warning("Не найден ключ веб-виджета на странице %s для товара %s", page, pid)
             break
 
         widget_data = json.loads(data["widgetStates"][widget_key])
@@ -97,9 +113,13 @@ def parse_ozon_reviews(
                 break
 
         if not widget_data.get("paging", {}).get("nextPage"):
+            logger.info(
+                "Страниц больше нет (последняя страница %s) для товара %s", page, pid
+            )
             break
 
         page += 1
         time.sleep(random.uniform(1, 2))
 
+    logger.info("Загружено %d отзывов для товара %s", len(reviews), pid)
     return reviews
