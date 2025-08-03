@@ -18,7 +18,7 @@ USER_AGENTS = [
 def extract_product_id(product_input: str) -> str:
     """Извлекает числовой ID товара из ссылки или строки."""
     if product_input.startswith("http"):
-        match = re.search(r"product/(\d+)", product_input)
+        match = re.search(r"product/(?:.*-)?(\d+)", product_input)
         if match:
             return match.group(1)
     elif product_input.isdigit():
@@ -32,6 +32,7 @@ def parse_ozon_reviews(product_input: str, max_reviews: int = 30) -> List[Dict]:
     reviews: List[Dict] = []
     page = 1
     session = requests.Session()
+    session.trust_env = False  # ignore proxy settings that may block requests
 
     while len(reviews) < max_reviews:
         url = (
@@ -39,9 +40,12 @@ def parse_ozon_reviews(product_input: str, max_reviews: int = 30) -> List[Dict]:
             f"/product/{pid}/reviews&page={page}"
         )
         headers = {"User-Agent": random.choice(USER_AGENTS)}
-        resp = session.get(url, headers=headers, timeout=10)
-        resp.raise_for_status()
-        data = resp.json()
+        try:
+            resp = session.get(url, headers=headers, timeout=10)
+            resp.raise_for_status()
+            data = resp.json()
+        except (requests.RequestException, ValueError, json.JSONDecodeError):
+            break
 
         widget_key = next(
             (k for k in data.get("widgetStates", {}) if k.startswith("webReview")),
