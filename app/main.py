@@ -10,6 +10,7 @@ import pandas as pd
 import os
 import logging
 
+# Настройка логирования
 if not logging.getLogger().handlers:
     logging.basicConfig(
         level=logging.INFO,
@@ -22,6 +23,7 @@ if not logging.getLogger().handlers:
 
 logger = logging.getLogger(__name__)
 
+# Настройка базы данных
 DB_FILE = os.environ.get("REVIEWS_DB", "sqlite:///reviews.db")
 engine = create_engine(DB_FILE, connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -34,26 +36,20 @@ templates = Jinja2Templates(directory="app/templates")
 async def dashboard(request: Request):
     session = SessionLocal()
     data = session.query(Review).all()
-    df = pd.DataFrame(
-        [
-            {
-                "Дата": r.date.strftime("%Y-%m-%d"),
-                "Рейтинг": r.rating,
-                "Тональность": r.sentiment,
-                "Фейковость": "Да" if r.is_fake else "Нет",
-                "Текст": r.text[:80] + "...",
-            }
-            for r in data
-        ]
-    )
+    df = pd.DataFrame([
+        {
+            "Дата": r.date.strftime("%Y-%m-%d"),
+            "Рейтинг": r.rating,
+            "Тональность": r.sentiment,
+            "Фейковость": "Да" if r.is_fake else "Нет",
+            "Текст": r.text[:80] + "...",
+        }
+        for r in data
+    ])
     session.close()
     return templates.TemplateResponse(
         "dashboard.html",
-        {
-            "request": request,
-            "reviews": df.to_dict("records"),
-            "error": request.query_params.get("error"),
-        },
+        {"request": request, "reviews": df.to_dict("records"), "error": request.query_params.get("error")},
     )
 
 @app.post("/analyze", response_class=HTMLResponse)
