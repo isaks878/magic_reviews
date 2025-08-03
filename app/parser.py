@@ -2,14 +2,23 @@ import json
 import random
 import time
 import re
+import logging
 from datetime import datetime
 from typing import List, Dict, Optional
 
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-import logging
 
+# Настройка логирования для парсера
+logger = logging.getLogger(__name__)
+if not logger.handlers:
+    handler = logging.StreamHandler()
+    handler.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+    )
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
 
 # Набор user-agent'ов, чтобы не блокировали запросы
 USER_AGENTS = [
@@ -18,7 +27,6 @@ USER_AGENTS = [
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
     "Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 Mobile/15E148 Safari/604.1",
 ]
-
 
 def _build_headers() -> Dict[str, str]:
     """Собирает заголовки, имитирующие реальные запросы браузера."""
@@ -38,23 +46,22 @@ def extract_product_id(product_input: str) -> str:
             return match.group(1)
     elif product_input.isdigit():
         return product_input
-    raise ValueError("Невалидный ввод")
-
-
-logger = logging.getLogger(__name__)
+    raise ValueError("Невалидный ввод: имена или ссылки без ID не поддерживаются")
 
 
 def parse_ozon_reviews(
     product_input: str, max_reviews: Optional[int] = None
 ) -> List[Dict]:
-    """Получает отзывы о товаре Ozon через внутренний API."""
+    """Получает отзывы о товаре Ozon через внутренний API с логированием."""
     pid = extract_product_id(product_input)
+    logger.info("Начинаем загрузку отзывов для товара %s", pid)
     reviews: List[Dict] = []
     page = 1
-    logger.info("Start fetching reviews for product %s", pid)
 
     session = requests.Session()
-    session.trust_env = False  # ignore proxy settings that may block requests
+    session.trust_env = False  # игнорируем системные прокси
+
+    # Настраиваем повторы при сетевых ошибках
     retries = Retry(
         total=3,
         backoff_factor=1,
@@ -65,35 +72,33 @@ def parse_ozon_reviews(
 
     while True:
         if max_reviews is not None and len(reviews) >= max_reviews:
+            logger.info("Достигнуто максимальное число отзывов: %d", max_reviews)
             break
 
         url = (
             "https://www.ozon.ru/api/composer-api.bx/page/json/v2?url="
             f"/product/{pid}/reviews&page={page}"
         )
-
         try:
             resp = session.get(url, headers=_build_headers(), timeout=10)
             resp.raise_for_status()
         except requests.HTTPError as exc:
             status = exc.response.status_code if exc.response else "unknown"
             logger.warning(
-                "HTTP %s while fetching page %s for product %s", status, page, pid
+                "HTTP %s при загрузке страницы %s для товара %s", status, page, pid
             )
             break
         except requests.RequestException as exc:
             logger.warning(
-                "Network error while fetching page %s for product %s: %s",
-                page,
-                pid,
-                exc,
+                "Сетевая ошибка при загрузке страницы %s для товара %s: %s",
+                page, pid, exc,
             )
             break
         try:
             data = resp.json()
         except (ValueError, json.JSONDecodeError) as exc:
             logger.warning(
-                "Failed to decode JSON on page %s for product %s: %s", page, pid, exc
+                "Ошибка декодирования JSON на странице %s для товара %s: %s", page, pid, exc
             )
             break
 
@@ -102,7 +107,9 @@ def parse_ozon_reviews(
             None,
         )
         if not widget_key:
-            logger.warning("No widget key on page %s for product %s", page, pid)
+            logger.warning(
+                "Не найден ключ webReview на странице %s для товара %s", page, pid
+            )
             break
 
         widget_data = json.loads(data["widgetStates"][widget_key])
@@ -124,13 +131,12 @@ def parse_ozon_reviews(
 
         if not widget_data.get("paging", {}).get("nextPage"):
             logger.info(
-                "No next page for product %s after page %s", pid, page
+                "Страниц больше нет (последняя страница %s) для товара %s", page, pid
             )
             break
 
         page += 1
         time.sleep(random.uniform(1, 2))
 
-    logger.info("Fetched %d reviews for product %s", len(reviews), pid)
+    logger.info("Загружено %d отзывов для товара %s", len(reviews), pid)
     return reviews
-
